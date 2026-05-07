@@ -114,7 +114,7 @@ const loadTerrain = async (url: string) => {
     const json = await res.json()
     if (json.bounds) {
       viewer.camera.flyTo({
-        destination: Cesium.Rectangle.fromDegrees(...json.bounds),
+        destination: Cesium.Rectangle.fromDegrees(...json.valid_bounds),
         duration: 2
       })
     }

@@ -96,6 +96,15 @@ public class RasterStandardizer {
                         resampled = resample(cropped, targetCRS);
                     }
 
+                    if (isCoverageBlank(resampled)) {
+                        log.info("[Pre][Standardization][{}/{}] Skipping blank tile at x:{}, y:{}", count, total, x, y);
+                        resampled.dispose(true);
+                        if (resampled != cropped) {
+                            cropped.dispose(true);
+                        }
+                        continue;
+                    }
+
                     String uniqueTileName = source.getName() + "-" + x / tileSize + "-" + y / tileSize + UUID.randomUUID();
                     File tileFile = new File(outputPath, uniqueTileName + ".tif");
                     writeGeotiff(resampled, tileFile);
@@ -169,6 +178,17 @@ public class RasterStandardizer {
                     GridGeometry2D demGrid = resampled.getGridGeometry();
                     GridCoverage2D geoidAligned = resampleGeoid(geoidCoverage, demGrid, demGrid.getCoordinateReferenceSystem());
                     GridCoverage2D ellipsoidalDem = addGeoidPreserveDemNoData(resampled, geoidAligned);
+
+                    if (isCoverageBlank(ellipsoidalDem)) {
+                        log.info("[Pre][Standardization][with Geoid][{}/{}] Skipping blank tile at x:{}, y:{}", count, total, x, y);
+                        ellipsoidalDem.dispose(true);
+                        geoidAligned.dispose(true);
+                        resampled.dispose(true);
+                        if (resampled != cropped) {
+                            cropped.dispose(true);
+                        }
+                        continue;
+                    }
 
                     String uniqueTileName = source.getName() + "-" + x / tileSize + "-" + y / tileSize + UUID.randomUUID();
                     File tileFile = new File(outputPath, uniqueTileName + ".tif");
@@ -350,6 +370,54 @@ public class RasterStandardizer {
         } else {
             return null;
         }
+    }
+
+    private boolean isNoDataSample(double sample, double[] noDataValues) {
+        if (Double.isNaN(sample)) {
+            return true;
+        }
+
+        double globalNoData = globalOptions.getNoDataValue();
+        if (Double.compare(sample, globalNoData) == 0) {
+            return true;
+        }
+
+        if (noDataValues == null) {
+            return false;
+        }
+
+        for (double noDataValue : noDataValues) {
+            if (Double.isNaN(noDataValue)) {
+                if (Double.isNaN(sample)) {
+                    return true;
+                }
+            } else if (Double.compare(sample, noDataValue) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isCoverageBlank(GridCoverage2D coverage) {
+        RenderedImage renderedImage = coverage.getRenderedImage();
+        if (renderedImage == null) {
+            return true;
+        }
+
+        Raster raster = renderedImage.getData();
+        NoDataContainer noDataContainer = CoverageUtilities.getNoDataProperty(coverage);
+        double[] noDataValues = noDataContainer != null ? noDataContainer.getAsArray() : null;
+
+        Rectangle bounds = raster.getBounds();
+        for (int y = bounds.y; y < bounds.y + bounds.height; y++) {
+            for (int x = bounds.x; x < bounds.x + bounds.width; x++) {
+                double sample = raster.getSampleDouble(x, y, 0);
+                if (!isNoDataSample(sample, noDataValues)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**
