@@ -207,8 +207,7 @@ public class TerrainElevationDataManager {
     }
 
     public double getElevation(double lonDeg, double latDeg, List<TerrainElevationData> terrainElevDataArray) {
-        double noDataValue = globalOptions.getNoDataValue();
-        double resultElevation = noDataValue;
+        double resultElevation = 0.0;
 
         if (rootTerrainElevationDataQuadTree == null) {
             return resultElevation;
@@ -218,14 +217,12 @@ public class TerrainElevationDataManager {
 
         intersects[0] = false;
         double pixelAreaAux = Double.MAX_VALUE;
-        double candidateElevation = noDataValue;
-        boolean foundIntersection = false;
+        double candidateElevation = 0.0;
         for (TerrainElevationData terrainElevationData : terrainElevDataArray) {
             double elevation = terrainElevationData.getElevation(lonDeg, latDeg, intersects);
             if (!intersects[0]) {
                 continue;
             }
-            foundIntersection = true;
 
             // Prioritize by resolution when configured.
             if (priorityType.equals(PriorityType.RESOLUTION)) {
@@ -239,10 +236,6 @@ public class TerrainElevationDataManager {
             } else {
                 candidateElevation = Math.max(candidateElevation, elevation);
             }
-        }
-
-        if (!foundIntersection) {
-            return noDataValue;
         }
 
         resultElevation = candidateElevation;
