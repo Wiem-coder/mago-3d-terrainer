@@ -112,6 +112,11 @@ public class Mago3DTerrainerMain {
 
         TileWgs84Manager tileWgs84Manager = new TileWgs84Manager();
 
+        // 核心优化：导入全球基础地形包 (0-5级)
+        log.info("[Pre][Globe] Importing global base terrain tiles...");
+        tileWgs84Manager.getTerrainWriter().importGlobePak(globalOptions.getGlobePath());
+        log.info("[Pre][Globe] Global base terrain tiles imported.");
+
         log.info("[Pre][AvailableTileSet] Start calculating available tiles for each depth.");
         tileWgs84Manager.calculateAvailableTilesForEachDepth();
         log.info("[Pre][AvailableTileSet] Finished calculating available tiles for each depth.");

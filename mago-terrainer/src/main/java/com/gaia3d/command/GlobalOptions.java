@@ -59,6 +59,7 @@ public class GlobalOptions {
     private String outputPath;
     private String logPath;
     private String geoidPath;
+    private String globePath = "E:/Data/Tiles/Globe.pak";
     private String outputFormat = "flat";
     private boolean layerJsonGenerate = false;
     private boolean debugMode = false;

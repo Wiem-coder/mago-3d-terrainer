@@ -29,7 +29,7 @@ import java.util.Optional;
 public class TerrainDataController {
 
     private final TerrainService terrainService;
-    private static final int PARTITION_SIZE = 256;
+    private static final int PARTITION_SIZE = 512;
     private static final int ROOT_BLOCK_MAX_LEVEL = 10;
 
     @Operation(summary = "Get terrain data from Flat or Compact storage")
@@ -100,8 +100,8 @@ public class TerrainDataController {
         if (z < ROOT_BLOCK_MAX_LEVEL) {
             tableName = "blocks";
         } else {
-            long gridX = (x / PARTITION_SIZE) * PARTITION_SIZE;
-            long gridY = (y / PARTITION_SIZE) * PARTITION_SIZE;
+            long gridX = (x / PARTITION_SIZE);
+            long gridY = (y / PARTITION_SIZE);
             tableName = "blocks_" + z + "_" + gridX + "_" + gridY;
         }
 

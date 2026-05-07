@@ -15,10 +15,14 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
+/**
+ * Represents a layer in the terrain dataset, managing tile availability and metadata.
+ */
 @Getter
 @Setter
 @Slf4j
 public class TerrainLayer {
+    private static final int GLOBAL_BASE_MAX_DEPTH = 5;
     private final List<TileRange> available = new ArrayList<>();
     private String tilejson = null;
     private String name = null;
@@ -29,68 +33,69 @@ public class TerrainLayer {
     private String template = null;
     private String legend = null;
     private String scheme = null;
-    private List<String> extensions = null;
+    private List<String> extensions = new ArrayList<>();
     private String[] tiles = null;
     private String projection = null;
     private double[] bounds = null;
+    private double[] valid_bounds = new double[4];
 
     public TerrainLayer() {
         this.setDefault();
     }
 
-    public Map<Integer, TileRange> getTilesRangeMap() {
-        Map<Integer, TileRange> tilesRangeMap = new TreeMap<>();
-
+    /**
+     * Gets a map of tile ranges grouped by depth, supporting multiple ranges per depth.
+     * @return A sorted map where the key is the depth and the value is a list of tile ranges.
+     */
+    public Map<Integer, List<TileRange>> getTilesRangeMapMulti() {
+        Map<Integer, List<TileRange>> tilesRangeMap = new TreeMap<>();
         for (TileRange tilesRange : this.available) {
-            tilesRangeMap.put(tilesRange.getTileDepth(), tilesRange);
+            tilesRangeMap.computeIfAbsent(tilesRange.getTileDepth(), k -> new ArrayList<>()).add(tilesRange);
         }
-
         return tilesRangeMap;
     }
 
+    private Map<Integer, List<TileRange>> withGlobalBaseAvailability(Map<Integer, List<TileRange>> source) {
+        Map<Integer, List<TileRange>> result = new TreeMap<>();
+        for (Map.Entry<Integer, List<TileRange>> entry : source.entrySet()) {
+            result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+
+        for (int depth = 0; depth <= GLOBAL_BASE_MAX_DEPTH; depth++) {
+            TileRange globalRange = new TileRange();
+            globalRange.setTileDepth(depth);
+            globalRange.setMinTileX(0);
+            globalRange.setMaxTileX(globalRange.getMaxValidTileX());
+            globalRange.setMinTileY(0);
+            globalRange.setMaxTileY(globalRange.getMaxValidTileY());
+            result.put(depth, new ArrayList<>(Collections.singletonList(globalRange)));
+        }
+        return result;
+    }
+
+    /**
+     * Builds the JSON array representing available tiles for each depth.
+     * @param objectMapper The Jackson ObjectMapper to use.
+     * @return An ArrayNode containing lists of tile ranges for each depth.
+     */
     private ArrayNode buildAvailableArray(ObjectMapper objectMapper) {
         ArrayNode objectNodeAvailable = objectMapper.createArrayNode();
-        Map<Integer, TileRange> tilesRangeMap = this.getTilesRangeMap();
-        if (tilesRangeMap.isEmpty()) {
-            return objectNodeAvailable;
-        }
+        
+        // Group available ranges by depth using the multi-map helper
+        Map<Integer, List<TileRange>> tilesRangeMap = withGlobalBaseAvailability(getTilesRangeMapMulti());
 
         int maxDepth = Collections.max(tilesRangeMap.keySet());
         for (int tileDepth = 0; tileDepth <= maxDepth; tileDepth++) {
             ArrayNode objectNodeTileDepthArray = objectMapper.createArrayNode();
-            TileRange tilesRange = tilesRangeMap.get(tileDepth);
-            if (tilesRange != null) {
-                ObjectNode objectNodeTileDepth = objectMapper.createObjectNode();
-                objectNodeTileDepth.put("startX", tilesRange.getMinTileX());
-                objectNodeTileDepth.put("endX", tilesRange.getMaxTileX());
-                objectNodeTileDepth.put("startY", tilesRange.getMinTileY());
-                objectNodeTileDepth.put("endY", tilesRange.getMaxTileY());
-                objectNodeTileDepthArray.add(objectNodeTileDepth);
-            }
-            objectNodeAvailable.add(objectNodeTileDepthArray);
-        }
-
-        return objectNodeAvailable;
-    }
-
-    private ArrayNode buildAvailableArrayCustom(ObjectMapper objectMapper, AvailableTileSet availableTileSet) {
-        ArrayNode objectNodeAvailable = objectMapper.createArrayNode();
-        Map<Integer, List<TileRange>> mapDepthAvailableTileRanges = new TreeMap<>(availableTileSet.getMapDepthAvailableTileRanges());
-        if (mapDepthAvailableTileRanges.isEmpty()) {
-            return objectNodeAvailable;
-        }
-
-        int maxDepth = Collections.max(mapDepthAvailableTileRanges.keySet());
-        for (int tileDepth = 0; tileDepth <= maxDepth; tileDepth++) {
-            ArrayNode objectNodeTileDepthArray = objectMapper.createArrayNode();
-            List<TileRange> tileRanges = mapDepthAvailableTileRanges.get(tileDepth);
-            if (tileRanges != null) {
-                for (TileRange tilesRange : tileRanges) {
+            List<TileRange> ranges = tilesRangeMap.get(tileDepth);
+            if (ranges != null) {
+                for (TileRange tilesRange : ranges) {
+                    TileRange normalizedRange = normalizeTileRange(tilesRange);
                     ObjectNode objectNodeTileDepth = objectMapper.createObjectNode();
-                    objectNodeTileDepth.put("startX", tilesRange.getMinTileX());
-                    objectNodeTileDepth.put("endX", tilesRange.getMaxTileX());
-                    objectNodeTileDepth.put("startY", tilesRange.getMinTileY());
-                    objectNodeTileDepth.put("endY", tilesRange.getMaxTileY());
+                    objectNodeTileDepth.put("startX", normalizedRange.getMinTileX());
+                    objectNodeTileDepth.put("endX", normalizedRange.getMaxTileX());
+                    objectNodeTileDepth.put("startY", normalizedRange.getMinTileY());
+                    objectNodeTileDepth.put("endY", normalizedRange.getMaxTileY());
                     objectNodeTileDepthArray.add(objectNodeTileDepth);
                 }
             }
@@ -100,35 +105,78 @@ public class TerrainLayer {
         return objectNodeAvailable;
     }
 
+    /**
+     * Builds the JSON array representing available tiles using a custom AvailableTileSet.
+     * @param objectMapper The Jackson ObjectMapper to use.
+     * @param availableTileSet The custom tile set to use.
+     * @return An ArrayNode containing lists of tile ranges for each depth.
+     */
+    private ArrayNode buildAvailableArrayCustom(ObjectMapper objectMapper, AvailableTileSet availableTileSet) {
+        ArrayNode objectNodeAvailable = objectMapper.createArrayNode();
+        Map<Integer, List<TileRange>> mapDepthAvailableTileRanges = withGlobalBaseAvailability(availableTileSet.getMapDepthAvailableTileRanges());
+
+        int maxDepth = Collections.max(mapDepthAvailableTileRanges.keySet());
+        for (int tileDepth = 0; tileDepth <= maxDepth; tileDepth++) {
+            ArrayNode objectNodeTileDepthArray = objectMapper.createArrayNode();
+            List<TileRange> tileRanges = mapDepthAvailableTileRanges.get(tileDepth);
+            if (tileRanges != null) {
+                for (TileRange tilesRange : tileRanges) {
+                    TileRange normalizedRange = normalizeTileRange(tilesRange);
+                    ObjectNode objectNodeTileDepth = objectMapper.createObjectNode();
+                    objectNodeTileDepth.put("startX", normalizedRange.getMinTileX());
+                    objectNodeTileDepth.put("endX", normalizedRange.getMaxTileX());
+                    objectNodeTileDepth.put("startY", normalizedRange.getMinTileY());
+                    objectNodeTileDepth.put("endY", normalizedRange.getMaxTileY());
+                    objectNodeTileDepthArray.add(objectNodeTileDepth);
+                }
+            }
+            objectNodeAvailable.add(objectNodeTileDepthArray);
+        }
+
+        return objectNodeAvailable;
+    }
+
+    /**
+     * Sets the default values for the terrain layer.
+     */
     public void setDefault() {
         this.tilejson = "2.1.0";
-        this.name = "insert name here";
-        this.description = "insert description here";
+        this.name = "Gaia3D Terrain";
+        this.description = "Quantized Mesh Terrain generated by Mago3D Terrainer";
         this.version = "1.1.0";
         this.format = "quantized-mesh-1.0";
-        this.attribution = "insert attribution here";
+        this.attribution = "Gaia3D, Inc.";
         this.template = "terrain";
-        this.legend = "insert legend here";
+        this.legend = "terrain";
         this.scheme = "tms";
         this.tiles = new String[1];
         this.tiles[0] = "{z}/{x}/{y}.terrain?v={version}";
-        this.projection = "EPSG:4326"; // CesiumJS TerrainProvider only recognizes EPSG:4326; tile grid is the same angular lon/lat for all bodies
+        this.projection = "EPSG:4326"; 
         this.extensions = new ArrayList<>();
         this.bounds = new double[4];
         this.bounds[0] = 0.0;
         this.bounds[1] = 0.0;
         this.bounds[2] = 0.0;
         this.bounds[3] = 0.0;
+        this.valid_bounds = new double[4];
     }
 
+    /**
+     * Adds an extension to the terrain layer.
+     * @param extension The name of the extension to add.
+     */
     public void addExtension(String extension) {
         if (this.extensions == null) {
             this.extensions = new ArrayList<>();
         }
+        if ("metadata".equalsIgnoreCase(extension)) {
+            log.warn("Skipping terrain metadata extension in layer.json because metadataAvailability is not generated.");
+            return;
+        }
         this.extensions.add(extension);
     }
 
-    public boolean isInteger(String s) {
+    private boolean isInteger(String s) {
         try {
             Integer.parseInt(s);
             return true;
@@ -137,6 +185,34 @@ public class TerrainLayer {
         }
     }
 
+    private int getMaxAvailableDepth() {
+        return this.available.stream()
+                .mapToInt(TileRange::getTileDepth)
+                .max()
+                .orElse(GLOBAL_BASE_MAX_DEPTH);
+    }
+
+    private int getMaxAvailableDepth(AvailableTileSet availableTileSet) {
+        return availableTileSet.getMapDepthAvailableTileRanges().keySet().stream()
+                .mapToInt(Integer::intValue)
+                .max()
+                .orElse(GLOBAL_BASE_MAX_DEPTH);
+    }
+
+    private TileRange normalizeTileRange(TileRange tileRange) {
+        TileRange normalizedRange = tileRange.clone();
+        normalizedRange.clampToValidRange();
+        return normalizedRange;
+    }
+
+    private boolean shouldWriteExtension(String extension) {
+        return !"metadata".equalsIgnoreCase(extension);
+    }
+
+    /**
+     * Generates available tiles information from the provided input path.
+     * @param inputPath The path containing the terrain tiles.
+     */
     public void generateAvailableTiles(String inputPath) {
         File inputDirectory = new File(inputPath);
         if (!inputDirectory.exists()) {
@@ -162,6 +238,7 @@ public class TerrainLayer {
                 log.info("[Generate][layer.json] Start generating layer.json. tileDepth: {}", tileDepth);
                 depthZ.add(tileDepth);
                 File[] tileXFiles = depthFile.listFiles();
+                if (tileXFiles == null) continue;
                 for (File tileXFile : tileXFiles) {
                     if (tileXFile.isDirectory()) {
                         if (!isInteger(tileXFile.getName())) {
@@ -170,6 +247,7 @@ public class TerrainLayer {
 
                         tileX.add(Integer.parseInt(tileXFile.getName()));
                         File[] tileYFiles = tileXFile.listFiles();
+                        if (tileYFiles == null) continue;
                         for (File tileYFile : tileYFiles) {
                             if (tileYFile.isFile()) {
                                 String tileYFileName = tileYFile.getName().split("\\.")[0];
@@ -181,17 +259,17 @@ public class TerrainLayer {
                         }
                     }
                 }
-                TileRange tilesRange = new TileRange();
-                tilesRange.setTileDepth(tileDepth);
-                tilesRange.setMinTileX(Collections.min(tileX));
-                tilesRange.setMaxTileX(Collections.max(tileX));
-                tilesRange.setMinTileY(Collections.min(tileY));
-                tilesRange.setMaxTileY(Collections.max(tileY));
-                available.add(tilesRange);
+                if (!tileX.isEmpty() && !tileY.isEmpty()) {
+                    TileRange tilesRange = new TileRange();
+                    tilesRange.setTileDepth(tileDepth);
+                    tilesRange.setMinTileX(Collections.min(tileX));
+                    tilesRange.setMaxTileX(Collections.max(tileX));
+                    tilesRange.setMinTileY(Collections.min(tileY));
+                    tilesRange.setMaxTileY(Collections.max(tileY));
+                    available.add(tilesRange);
+                }
             }
         }
-        log.info("Available tiles: {}", available);
-        log.info("DepthZ: {}", depthZ);
 
         if (available.isEmpty()) {
             log.warn("No tiles were found. Skipping bounds calculation for layer.json.");
@@ -200,7 +278,7 @@ public class TerrainLayer {
 
         available.sort(Comparator.comparingInt(TileRange::getTileDepth));
 
-        // calc bounds
+        // Calculate bounds from the actual data ranges
         double minLon = -180.0;
         double maxLon = 180.0;
         double minLat = -90.0;
@@ -220,11 +298,6 @@ public class TerrainLayer {
         double calcMinLat = (lastMaxTileY + 1) * tileHeight + minLat;
         double calcMaxLat = lastMinTileY * tileHeight + minLat;
 
-        log.info("calcMinLon: {}", calcMinLon);
-        log.info("calcMaxLon: {}", calcMaxLon);
-        log.info("calcMinLat: {}", calcMinLat);
-        log.info("calcMaxLat: {}", calcMaxLat);
-
         minLon = Math.max(minLon, calcMinLon);
         minLat = Math.max(minLat, calcMinLat);
         maxLon = Math.min(maxLon, calcMaxLon);
@@ -236,10 +309,18 @@ public class TerrainLayer {
         this.bounds[3] = maxLat;
     }
 
+    /**
+     * Gets the current configuration as a JSON string.
+     * @return JSON string of the layer configuration.
+     */
     public String getJsonString() {
         return buildJsonObject().toString();
     }
 
+    /**
+     * Builds the root JSON object for layer.json.
+     * @return A JsonNode representing the layer configuration.
+     */
     private JsonNode buildJsonObject() {
         ObjectMapper objectMapper = new ObjectMapper();
         ObjectNode objectNodeRoot = objectMapper.createObjectNode();
@@ -248,64 +329,59 @@ public class TerrainLayer {
         objectNodeRoot.put("description", this.description);
         objectNodeRoot.put("version", this.version);
         objectNodeRoot.put("format", this.format);
+        objectNodeRoot.put("maxzoom", getMaxAvailableDepth());
         objectNodeRoot.put("attribution", this.attribution);
         objectNodeRoot.put("template", this.template);
         objectNodeRoot.put("legend", this.legend);
         objectNodeRoot.put("scheme", this.scheme);
         objectNodeRoot.put("projection", this.projection);
         objectNodeRoot.putArray("tiles").add(this.tiles[0]);
-        objectNodeRoot.putArray("bounds").add(this.bounds[0]).add(this.bounds[1]).add(this.bounds[2]).add(this.bounds[3]);
+        
+        // 核心修改：为了兼容全球基础瓦片，标准 bounds 强制为全球范围
+        objectNodeRoot.putArray("bounds").add(-180.0).add(-90.0).add(180.0).add(90.0);
+        
+        // 引入自定义字段 valid_bounds，记录真实的 Tiff 数据覆盖范围
+        ArrayNode validBoundsNode = objectNodeRoot.putArray("valid_bounds");
+        validBoundsNode.add(this.bounds[0]).add(this.bounds[1]).add(this.bounds[2]).add(this.bounds[3]);
 
-        if (this.extensions != null && this.extensions.size() > 0) {
+        if (this.extensions != null && !this.extensions.isEmpty()) {
             ArrayNode objectNodeExtensions = objectMapper.createArrayNode();
             for (String extension : this.extensions) {
-                objectNodeExtensions.add(extension);
+                if (shouldWriteExtension(extension)) {
+                    objectNodeExtensions.add(extension);
+                }
             }
-            objectNodeRoot.set("extensions", objectNodeExtensions);
+            if (!objectNodeExtensions.isEmpty()) {
+                objectNodeRoot.set("extensions", objectNodeExtensions);
+            }
         }
 
         objectNodeRoot.set("available", buildAvailableArray(objectMapper));
         return objectNodeRoot;
     }
 
+    /**
+     * Saves the layer configuration to a file named layer.json in the specified directory.
+     * @param outputDirectory The directory where the file will be saved.
+     * @param layerJsonName The name of the JSON file.
+     */
     public void saveJsonFile(String outputDirectory, String layerJsonName) {
         String fullFileName = outputDirectory + File.separator + layerJsonName;
         FileUtils.createAllFoldersIfNoExist(outputDirectory);
 
         ObjectMapper objectMapper = new ObjectMapper();
-        ObjectNode objectNodeRoot = objectMapper.createObjectNode();
-        objectNodeRoot.put("tilejson", this.tilejson);
-        objectNodeRoot.put("name", this.name);
-        objectNodeRoot.put("description", this.description);
-        objectNodeRoot.put("version", this.version);
-        objectNodeRoot.put("format", this.format);
-        objectNodeRoot.put("attribution", this.attribution);
-        objectNodeRoot.put("template", this.template);
-        objectNodeRoot.put("legend", this.legend);
-        objectNodeRoot.put("scheme", this.scheme);
-        objectNodeRoot.put("projection", this.projection);
-        objectNodeRoot.putArray("tiles").add(this.tiles[0]);
-        objectNodeRoot.putArray("bounds").add(this.bounds[0]).add(this.bounds[1]).add(this.bounds[2]).add(this.bounds[3]);
-
-        if (this.extensions != null && this.extensions.size() > 0) {
-            ArrayNode objectNodeExtensions = objectMapper.createArrayNode();
-            for (String extension : this.extensions) {
-                objectNodeExtensions.add(extension);
-            }
-            objectNodeRoot.set("extensions", objectNodeExtensions);
-        }
-
-        objectNodeRoot.set("available", buildAvailableArray(objectMapper));
-
-        // Save the json index file
         try {
-            JsonNode jsonNode = new ObjectMapper().readTree(objectNodeRoot.toString());
-            objectMapper.writeValue(new File(fullFileName), jsonNode);
+            objectMapper.writeValue(new File(fullFileName), buildJsonObject());
         } catch (IOException e) {
-            log.error("Error:", e);
+            log.error("Error saving layer.json:", e);
         }
     }
 
+    /**
+     * Loads layer configuration from an existing layer.json file.
+     * @param jsonFullPath The full path to the JSON file.
+     * @param availableTileSet The tile set to populate from the loaded data.
+     */
     public void loadJsonFileCustom(String jsonFullPath, AvailableTileSet availableTileSet) {
         try {
             ObjectMapper objectMapper = new ObjectMapper();
@@ -335,6 +411,15 @@ public class TerrainLayer {
                 this.bounds = new double[4];
                 for (int i = 0; i < boundsArrayNode.size(); i++) {
                     this.bounds[i] = boundsArrayNode.get(i).asDouble();
+                }
+            }
+            
+            // Try load valid_bounds if exists
+            JsonNode vBoundsNode = jsonNode.get("valid_bounds");
+            if (vBoundsNode != null && vBoundsNode.size() == 4) {
+                this.valid_bounds = new double[4];
+                for (int i = 0; i < 4; i++) {
+                    this.valid_bounds[i] = vBoundsNode.get(i).asDouble();
                 }
             }
 
@@ -374,46 +459,31 @@ public class TerrainLayer {
             }
 
         } catch (IOException e) {
-            log.error("Error:", e);
+            log.error("Error loading layer.json:", e);
         }
     }
 
+    /**
+     * Saves the layer configuration using a custom AvailableTileSet.
+     * @param outputDirectory The directory where the file will be saved.
+     * @param layerJsonName The name of the JSON file.
+     * @param availableTileSet The custom tile set to use for generating availability.
+     */
     public void saveJsonFileCustom(String outputDirectory, String layerJsonName, AvailableTileSet availableTileSet) {
         String fullFileName = outputDirectory + File.separator + layerJsonName;
         FileUtils.createAllFoldersIfNoExist(outputDirectory);
 
         ObjectMapper objectMapper = new ObjectMapper();
-        ObjectNode objectNodeRoot = objectMapper.createObjectNode();
-        objectNodeRoot.put("tilejson", this.tilejson);
-        objectNodeRoot.put("name", this.name);
-        objectNodeRoot.put("description", this.description);
-        objectNodeRoot.put("version", this.version);
-        objectNodeRoot.put("format", this.format);
-        objectNodeRoot.put("attribution", this.attribution);
-        objectNodeRoot.put("template", this.template);
-        objectNodeRoot.put("legend", this.legend);
-        objectNodeRoot.put("scheme", this.scheme);
-        objectNodeRoot.put("projection", this.projection);
-        objectNodeRoot.putArray("tiles").add(this.tiles[0]);
-        objectNodeRoot.putArray("bounds").add(this.bounds[0]).add(this.bounds[1]).add(this.bounds[2]).add(this.bounds[3]);
-
-        if (this.extensions != null && this.extensions.size() > 0) {
-            ArrayNode objectNodeExtensions = objectMapper.createArrayNode();
-            for (String extension : this.extensions) {
-                objectNodeExtensions.add(extension);
-            }
-            objectNodeRoot.set("extensions", objectNodeExtensions);
-        }
-
+        ObjectNode objectNodeRoot = (ObjectNode) buildJsonObject();
+        
+        // Override available with custom data
+        objectNodeRoot.put("maxzoom", getMaxAvailableDepth(availableTileSet));
         objectNodeRoot.set("available", buildAvailableArrayCustom(objectMapper, availableTileSet));
 
-        // Save the json index file
         try {
-            JsonNode jsonNode = new ObjectMapper().readTree(objectNodeRoot.toString());
-            objectMapper.writeValue(new File(fullFileName), jsonNode);
+            objectMapper.writeValue(new File(fullFileName), objectNodeRoot);
         } catch (IOException e) {
-            log.error("Error:", e);
+            log.error("Error saving custom layer.json:", e);
         }
     }
-
 }

@@ -44,6 +44,12 @@ public class FileSystemWriter implements TerrainWriter {
     }
 
     @Override
+    public void importGlobePak(String globePakPath) throws IOException {
+        // 对于文件系统写入器，暂不支持直接从 PAK 导入，仅记录日志
+        // 如果未来需要支持，可以在此实现从 PAK 提取瓦片并存入文件夹的逻辑
+    }
+
+    @Override
     public void close() throws IOException {
         // No-op for file system
     }

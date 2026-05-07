@@ -483,7 +483,7 @@ public class TileWgs84Manager {
         }
 
         log.info("----------------------------------------");
-        int minTileDepth = globalOptions.getMinimumTileDepth();
+        int minTileDepth = Math.max(globalOptions.getMinimumTileDepth(), 6);
         int maxTileDepth = globalOptions.getMaximumTileDepth();
 
         for (int depth = minTileDepth; depth <= maxTileDepth; depth += 1) {
@@ -619,7 +619,7 @@ public class TileWgs84Manager {
         }
 
         log.info("----------------------------------------");
-        int minTileDepth = 0;
+        int minTileDepth = Math.max(globalOptions.getMinimumTileDepth(), 6);
         int maxTileDepth = globalOptions.getMaximumTileDepth();
 
         int availableMaxDepth = this.availableTileSet.getMaxAvailableDepth();
@@ -633,7 +633,7 @@ public class TileWgs84Manager {
 //        // if the maxTileDepth is less than the existent max depth, set the maxTileDepth to the existent max depth
 //        minTileDepth = Math.max(minTileDepth, existentMaxDepth + 1);
 
-        for (int depth = 0; depth <= maxTileDepth; depth += 1) {
+        for (int depth = minTileDepth; depth <= maxTileDepth; depth += 1) {
             long startTime = System.currentTimeMillis();
 
 //            // check if the temp folder exists
@@ -680,7 +680,7 @@ public class TileWgs84Manager {
                 log.info("[Tile][{}/{}][{}/{}] process tiling...", depth, maxTileDepth, progress, total);
                 TileMatrix tileMatrix = new TileMatrix(subDividedTilesRange, this);
 
-                boolean isFirstGeneration = (depth == 0);
+                boolean isFirstGeneration = (depth == minTileDepth);
                 tileMatrix.makeMatrixMeshModifyMode(isFirstGeneration);
                 tileMatrix.deleteObjects();
             }
@@ -756,7 +756,7 @@ public class TileWgs84Manager {
         }
 
         log.info("----------------------------------------");
-        int minTileDepth = 0;
+        int minTileDepth = Math.max(globalOptions.getMinimumTileDepth(), 6);
         int maxTileDepth = globalOptions.getMaximumTileDepth();
 
         int availableMaxDepth = this.availableTileSet.getMaxAvailableDepth();
@@ -811,7 +811,7 @@ public class TileWgs84Manager {
                 log.info("[Tile][{}/{}][{}/{}] process tiling...", depth, maxTileDepth, progress, total);
                 TileMatrix tileMatrix = new TileMatrix(subDividedTilesRange, this);
 
-                boolean isFirstGeneration = (depth == 0);
+                boolean isFirstGeneration = (depth == minTileDepth);
                 tileMatrix.makeMatrixMesh(isFirstGeneration);
                 tileMatrix.deleteObjects();
             }
@@ -883,7 +883,7 @@ public class TileWgs84Manager {
         }
 
         log.info("----------------------------------------");
-        int minTileDepth = 0;
+        int minTileDepth = Math.max(globalOptions.getMinimumTileDepth(), 6);
         int maxTileDepth = globalOptions.getMaximumTileDepth();
         int availableMaxDepth = this.availableTileSet.getMaxAvailableDepth();
         if (maxTileDepth < 0) {
@@ -1411,7 +1411,7 @@ public class TileWgs84Manager {
 
             Vector2d pixelSizeMeters = GaiaGeoTiffUtils.getPixelSizeMeters(originalGridCoverage2D);
 
-            int minTileDepth = globalOptions.getMinimumTileDepth();
+            int minTileDepth = Math.max(globalOptions.getMinimumTileDepth(), 6);
             int maxTileDepth = globalOptions.getMaximumTileDepth();
             for (int depth = minTileDepth; depth <= maxTileDepth; depth += 1) {
                 double desiredPixelSizeXinMeters = this.depthDesiredPixelSizeXinMetersMap.get(depth);
@@ -1495,15 +1495,9 @@ public class TileWgs84Manager {
         int geoTiffFilesSize = rasterFileNames.size();
         int geoTiffFilesCount = 0;
 
-        // for depth = 0, set the available tile range to the whole world
-        TileRange tilesRange = new TileRange();
-        tilesRange.setTileDepth(0);
-        tilesRange.setMinTileX(0);
-        tilesRange.setMaxTileX(1);
-        tilesRange.setMinTileY(0);
-        tilesRange.setMaxTileY(0);
-        List<TileRange> tileRanges = availableTileSet.getMapDepthAvailableTileRanges().computeIfAbsent(0, k -> new java.util.ArrayList<>());
-        tileRanges.add(tilesRange);
+        int configuredMaxDepth = globalOptions.getMaximumTileDepth();
+        int globalBaseMaxDepth = configuredMaxDepth < 0 ? 5 : Math.min(5, configuredMaxDepth);
+        availableTileSet.addGlobalTileRanges(globalBaseMaxDepth);
 
         // TODO : Multi-threading
         for (String geoTiffFileName : rasterFileNames) {
@@ -1536,7 +1530,7 @@ public class TileWgs84Manager {
                 continue;
             }
 
-            availableTileSet.addAvailableExtensions(pixelSizeMeters.x, geographicExtension);
+            availableTileSet.addAvailableExtensions(pixelSizeMeters.x, geographicExtension, 6);
         }
         availableTileSet.recombineTileRanges();
 

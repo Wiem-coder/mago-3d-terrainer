@@ -45,9 +45,13 @@ public class AvailableTileSet {
     }
 
     public void addAvailableExtensions(double pixelSizeMeters, GeographicExtension extension) {
+        addAvailableExtensions(pixelSizeMeters, extension, 0);
+    }
+
+    public void addAvailableExtensions(double pixelSizeMeters, GeographicExtension extension, int minDepth) {
         int maxDepth = TileWgs84Utils.getMaxTileDepthByPixelSizeMeters(pixelSizeMeters);
         boolean originIsLeftUp = false;
-        for (int depth = 0; depth <= maxDepth; depth++) {
+        for (int depth = Math.max(0, minDepth); depth <= maxDepth; depth++) {
             List<TileRange> tileRanges = mapDepthAvailableTileRanges.computeIfAbsent(depth, k -> new java.util.ArrayList<>());
 
             GeographicExtension extensionCopy = new GeographicExtension();
@@ -61,6 +65,19 @@ public class AvailableTileSet {
 
             tilesRange = tilesRange.expand(1); // add one tile margin to avoid big difference on edges between different depth tiles.
             tileRanges.add(tilesRange);
+        }
+    }
+
+    public void addGlobalTileRanges(int maxDepth) {
+        for (int depth = 0; depth <= maxDepth; depth++) {
+            TileRange tileRange = new TileRange();
+            tileRange.setTileDepth(depth);
+            tileRange.setMinTileX(0);
+            tileRange.setMaxTileX((1 << (depth + 1)) - 1);
+            tileRange.setMinTileY(0);
+            tileRange.setMaxTileY((1 << depth) - 1);
+            List<TileRange> tileRanges = mapDepthAvailableTileRanges.computeIfAbsent(depth, k -> new java.util.ArrayList<>());
+            tileRanges.add(tileRange);
         }
     }
 

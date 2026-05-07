@@ -34,6 +34,35 @@ public class TileRange {
         return tileRange;
     }
 
+    public int getMaxValidTileX() {
+        return (1 << (tileDepth + 1)) - 1;
+    }
+
+    public int getMaxValidTileY() {
+        return (1 << tileDepth) - 1;
+    }
+
+    public void clampToValidRange() {
+        int maxValidX = getMaxValidTileX();
+        int maxValidY = getMaxValidTileY();
+
+        this.minTileX = Math.max(0, Math.min(this.minTileX, maxValidX));
+        this.maxTileX = Math.max(0, Math.min(this.maxTileX, maxValidX));
+        this.minTileY = Math.max(0, Math.min(this.minTileY, maxValidY));
+        this.maxTileY = Math.max(0, Math.min(this.maxTileY, maxValidY));
+
+        if (this.minTileX > this.maxTileX) {
+            int temp = this.minTileX;
+            this.minTileX = this.maxTileX;
+            this.maxTileX = temp;
+        }
+        if (this.minTileY > this.maxTileY) {
+            int temp = this.minTileY;
+            this.minTileY = this.maxTileY;
+            this.maxTileY = temp;
+        }
+    }
+
     public void translate(int translateX, int translateY) {
         this.minTileX += translateX;
         this.maxTileX += translateX;
@@ -82,6 +111,7 @@ public class TileRange {
         expandedTilesRange.setMaxTileX(expandedMaxTileX);
         expandedTilesRange.setMinTileY(expandedMinTileY);
         expandedTilesRange.setMaxTileY(expandedMaxTileY);
+        expandedTilesRange.clampToValidRange();
         return expandedTilesRange;
 
     }
@@ -103,6 +133,7 @@ public class TileRange {
         expandedTilesRange.setMaxTileX(expandedMaxTileX);
         expandedTilesRange.setMinTileY(expandedMinTileY);
         expandedTilesRange.setMaxTileY(expandedMaxTileY);
+        expandedTilesRange.clampToValidRange();
         return expandedTilesRange;
 
     }
