@@ -165,7 +165,7 @@ public class Mago3DTerrainerMain {
         }
 
         log.info("[Post][Clear] Start deleting memory objects.");
-        tileWgs84Manager.deleteObjects();
+//        tileWgs84Manager.deleteObjects();
         log.info("[Post][Clear] Finished deleting memory objects.");
 
         System.gc();

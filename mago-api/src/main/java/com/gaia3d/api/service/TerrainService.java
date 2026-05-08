@@ -113,6 +113,7 @@ public class TerrainService {
 
         try {
             GlobalOptions.recreateInstance();
+            request.setTemp(request.getInput() + "/temp");
             String[] args = convertToArgs(request);
             GlobalOptions globalOptions = GlobalOptions.getInstance();
             CommandLineConfiguration commandLineConfig = globalOptions.getCommandLineConfiguration();

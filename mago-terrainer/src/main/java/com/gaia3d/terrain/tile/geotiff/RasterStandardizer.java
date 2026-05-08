@@ -36,8 +36,14 @@ import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Standardizes raster CRS and size for terrain processing.
@@ -67,57 +73,83 @@ public class RasterStandardizer {
             int marginX = Math.max((int) (tileSize * 0.01), margin);
             int marginY = Math.max((int) (tileSize * 0.01), margin);
 
-            int count = 0;
+            AtomicInteger count = new AtomicInteger(0);
+
+            // Bounded parallel thread pool (e.g., max cores / 2, at least 1) to avoid memory explosion (OOM)
+            int maxThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+            ExecutorService executor = Executors.newFixedThreadPool(maxThreads);
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
             for (int x = 0; x < width; x += tileSize) {
                 for (int y = 0; y < height; y += tileSize) {
-                    count++;
-                    log.info("[Pre][Standardization][{}/{}] Processing tile at x:{}, y:{}", count, total, x, y);
+                    final int currentX = x;
+                    final int currentY = y;
 
-                    int xMax = Math.min(x + tileSize, width);
-                    int yMax = Math.min(y + tileSize, height);
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        try {
+                            int currentCount = count.incrementAndGet();
+                            log.info("[Pre][Standardization][{}/{}] Processing tile at x:{}, y:{}", currentCount, total, currentX, currentY);
 
-                    if ((x + tileSize) < width) xMax += marginX;
-                    if ((y + tileSize) < height) yMax += marginY;
+                            int xMax = Math.min(currentX + tileSize, width);
+                            int yMax = Math.min(currentY + tileSize, height);
 
-                    int xAux = Math.max(0, x - marginX);
-                    int yAux = Math.max(0, y - marginY);
+                            if ((currentX + tileSize) < width) xMax += marginX;
+                            if ((currentY + tileSize) < height) yMax += marginY;
 
-                    ReferencedEnvelope tileEnvelope = new ReferencedEnvelope(
-                            gridGeometry.gridToWorld(new GridEnvelope2D(xAux, yAux, xMax - xAux, yMax - yAux)),
-                            source.getCoordinateReferenceSystem()
-                    );
+                            int xAux = Math.max(0, currentX - marginX);
+                            int yAux = Math.max(0, currentY - marginY);
 
-                    GridCoverage2D cropped = crop(source, tileEnvelope);
-                    CoordinateReferenceSystem sourceCRS = cropped.getCoordinateReferenceSystem();
-                    GridCoverage2D resampled;
-                    if (isSameCRS(sourceCRS, targetCRS)) {
-                        resampled = cropped;
-                    } else {
-                        resampled = resample(cropped, targetCRS);
-                    }
+                            ReferencedEnvelope tileEnvelope = new ReferencedEnvelope(
+                                    gridGeometry.gridToWorld(new GridEnvelope2D(xAux, yAux, xMax - xAux, yMax - yAux)),
+                                    source.getCoordinateReferenceSystem()
+                            );
 
-                    if (isCoverageBlank(resampled)) {
-                        log.info("[Pre][Standardization][{}/{}] Skipping blank tile at x:{}, y:{}", count, total, x, y);
-                        resampled.dispose(true);
-                        if (resampled != cropped) {
-                            cropped.dispose(true);
+                            GridCoverage2D cropped = crop(source, tileEnvelope);
+                            CoordinateReferenceSystem sourceCRS = cropped.getCoordinateReferenceSystem();
+                            GridCoverage2D resampled;
+                            if (isSameCRS(sourceCRS, targetCRS)) {
+                                resampled = cropped;
+                            } else {
+                                resampled = resample(cropped, targetCRS);
+                            }
+
+                            if (isCoverageBlank(resampled)) {
+                                log.info("[Pre][Standardization][{}/{}] Skipping blank tile at x:{}, y:{}", currentCount, total, currentX, currentY);
+                                resampled.dispose(true);
+                                if (resampled != cropped) {
+                                    cropped.dispose(true);
+                                }
+                                return;
+                            }
+
+                            String uniqueTileName = source.getName() + "-" + currentX / tileSize + "-" + currentY / tileSize + UUID.randomUUID();
+                            File tileFile = new File(outputPath, uniqueTileName + ".tif");
+                            writeGeotiff(resampled, tileFile);
+
+                            resampled.dispose(true);
+                            if (resampled != cropped) {
+                                cropped.dispose(true);
+                            }
+                            log.info("[Pre][Standardization][{}/{}] Completed tile", currentCount, total);
+                        } catch (Exception e) {
+                            log.error("[Pre][Standardization] Error processing tile at x:{}, y:{}", currentX, currentY, e);
+                            throw new RuntimeException(e);
                         }
-                        continue;
-                    }
-
-                    String uniqueTileName = source.getName() + "-" + x / tileSize + "-" + y / tileSize + UUID.randomUUID();
-                    File tileFile = new File(outputPath, uniqueTileName + ".tif");
-                    writeGeotiff(resampled, tileFile);
-
-                    resampled.dispose(true);
-                    if (resampled != cropped) {
-                        cropped.dispose(true);
-                    }
-                    log.info("[Pre][Standardization][{}/{}] Completed tile", count, total);
+                    }, executor));
                 }
             }
+
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } catch (Exception e) {
+                log.error("Parallel execution failed during standardization.", e);
+                throw new RuntimeException(e);
+            } finally {
+                executor.shutdown();
+            }
+
             log.info("[Pre][Standardization] Completed Write [{}] tiles",  total);
-        } catch (TransformException e) {
+        } catch (Exception e) {
             log.error("Failed to standardization.", e);
             throw new RuntimeException(e);
         }
@@ -146,64 +178,90 @@ public class RasterStandardizer {
             int marginX = Math.max((int) (tileSize * 0.01), margin);
             int marginY = Math.max((int) (tileSize * 0.01), margin);
 
-            int count = 0;
+            AtomicInteger count = new AtomicInteger(0);
+
+            // Bounded parallel thread pool (e.g., max cores / 2, at least 1) to avoid memory explosion (OOM)
+            int maxThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+            ExecutorService executor = Executors.newFixedThreadPool(maxThreads);
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
             for (int x = 0; x < width; x += tileSize) {
                 for (int y = 0; y < height; y += tileSize) {
-                    count++;
-                    log.info("[Pre][Standardization][with Geoid][{}/{}] Processing tile at x:{}, y:{}", count, total, x, y);
+                    final int currentX = x;
+                    final int currentY = y;
 
-                    int xMax = Math.min(x + tileSize, width);
-                    int yMax = Math.min(y + tileSize, height);
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        try {
+                            int currentCount = count.incrementAndGet();
+                            log.info("[Pre][Standardization][with Geoid][{}/{}] Processing tile at x:{}, y:{}", currentCount, total, currentX, currentY);
 
-                    if ((x + tileSize) < width) xMax += marginX;
-                    if ((y + tileSize) < height) yMax += marginY;
+                            int xMax = Math.min(currentX + tileSize, width);
+                            int yMax = Math.min(currentY + tileSize, height);
 
-                    int xAux = Math.max(0, x - marginX);
-                    int yAux = Math.max(0, y - marginY);
+                            if ((currentX + tileSize) < width) xMax += marginX;
+                            if ((currentY + tileSize) < height) yMax += marginY;
 
-                    ReferencedEnvelope tileEnvelope = new ReferencedEnvelope(
-                            gridGeometry.gridToWorld(new GridEnvelope2D(xAux, yAux, xMax - xAux, yMax - yAux)),
-                            source.getCoordinateReferenceSystem()
-                    );
+                            int xAux = Math.max(0, currentX - marginX);
+                            int yAux = Math.max(0, currentY - marginY);
 
-                    GridCoverage2D cropped = crop(source, tileEnvelope);
-                    CoordinateReferenceSystem sourceCRS = cropped.getCoordinateReferenceSystem();
-                    GridCoverage2D resampled;
-                    if (isSameCRS(sourceCRS, targetCRS)) {
-                        resampled = cropped;
-                    } else {
-                        resampled = resample(cropped, targetCRS);
-                    }
+                            ReferencedEnvelope tileEnvelope = new ReferencedEnvelope(
+                                    gridGeometry.gridToWorld(new GridEnvelope2D(xAux, yAux, xMax - xAux, yMax - yAux)),
+                                    source.getCoordinateReferenceSystem()
+                            );
 
-                    GridGeometry2D demGrid = resampled.getGridGeometry();
-                    GridCoverage2D geoidAligned = resampleGeoid(geoidCoverage, demGrid, demGrid.getCoordinateReferenceSystem());
-                    GridCoverage2D ellipsoidalDem = addGeoidPreserveDemNoData(resampled, geoidAligned);
+                            GridCoverage2D cropped = crop(source, tileEnvelope);
+                            CoordinateReferenceSystem sourceCRS = cropped.getCoordinateReferenceSystem();
+                            GridCoverage2D resampled;
+                            if (isSameCRS(sourceCRS, targetCRS)) {
+                                resampled = cropped;
+                            } else {
+                                resampled = resample(cropped, targetCRS);
+                            }
 
-                    if (isCoverageBlank(ellipsoidalDem)) {
-                        log.info("[Pre][Standardization][with Geoid][{}/{}] Skipping blank tile at x:{}, y:{}", count, total, x, y);
-                        ellipsoidalDem.dispose(true);
-                        geoidAligned.dispose(true);
-                        resampled.dispose(true);
-                        if (resampled != cropped) {
-                            cropped.dispose(true);
+                            GridGeometry2D demGrid = resampled.getGridGeometry();
+                            GridCoverage2D geoidAligned = resampleGeoid(geoidCoverage, demGrid, demGrid.getCoordinateReferenceSystem());
+                            GridCoverage2D ellipsoidalDem = addGeoidPreserveDemNoData(resampled, geoidAligned);
+
+                            if (isCoverageBlank(ellipsoidalDem)) {
+                                log.info("[Pre][Standardization][with Geoid][{}/{}] Skipping blank tile at x:{}, y:{}", currentCount, total, currentX, currentY);
+                                ellipsoidalDem.dispose(true);
+                                geoidAligned.dispose(true);
+                                resampled.dispose(true);
+                                if (resampled != cropped) {
+                                    cropped.dispose(true);
+                                }
+                                return;
+                            }
+
+                            String uniqueTileName = source.getName() + "-" + currentX / tileSize + "-" + currentY / tileSize + UUID.randomUUID();
+                            File tileFile = new File(outputPath, uniqueTileName + ".tif");
+                            writeGeotiff(ellipsoidalDem, tileFile);
+
+                            ellipsoidalDem.dispose(true);
+                            geoidAligned.dispose(true);
+                            resampled.dispose(true);
+                            if (resampled != cropped) {
+                                cropped.dispose(true);
+                            }
+                            log.info("[Pre][Standardization][with Geoid][{}/{}] Completed tile", currentCount, total);
+                        } catch (Exception e) {
+                            log.error("[Pre][Standardization][with Geoid] Error processing tile at x:{}, y:{}", currentX, currentY, e);
+                            throw new RuntimeException(e);
                         }
-                        continue;
-                    }
-
-                    String uniqueTileName = source.getName() + "-" + x / tileSize + "-" + y / tileSize + UUID.randomUUID();
-                    File tileFile = new File(outputPath, uniqueTileName + ".tif");
-                    writeGeotiff(ellipsoidalDem, tileFile);
-
-                    ellipsoidalDem.dispose(true);
-                    geoidAligned.dispose(true);
-                    resampled.dispose(true);
-                    if (resampled != cropped) {
-                        cropped.dispose(true);
-                    }
-                    log.info("[Pre][Standardization][with Geoid][{}/{}] Completed tile", count, total);
+                    }, executor));
                 }
             }
-        } catch (IOException | TransformException e) {
+
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } catch (Exception e) {
+                log.error("Parallel execution failed during standardization with Geoid.", e);
+                throw new RuntimeException(e);
+            } finally {
+                executor.shutdown();
+            }
+
+        } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {
             if (reader != null) {
@@ -331,7 +389,6 @@ public class RasterStandardizer {
      */
     public GridCoverage2D resampleGeoid(GridCoverage2D sourceCoverage, GridGeometry2D gridGeometry, CoordinateReferenceSystem targetCRS) {
         try {
-            CoverageProcessor.updateProcessors();
             CoverageProcessor processor = CoverageProcessor.getInstance();
 
             Operation operation = processor.getOperation("Resample");
@@ -517,3 +574,4 @@ public class RasterStandardizer {
         return false;
     }
 }
+

@@ -131,17 +131,17 @@ public class GlobalOptions {
             throw new IllegalArgumentException("Please enter the value of the output argument.");
         }
 
-        String sufix = java.util.UUID.randomUUID().toString();
+//        String sufix = java.util.UUID.randomUUID().toString();
         File inputDir = new File(instance.getInputPath());
         File parentDir = inputDir.getParentFile();
         if (parentDir == null) {
             parentDir = new File(".");
         }
-        File tempDir = new File(parentDir, "mago_temp_" + sufix);
+        File tempDir = new File(parentDir, "temp");
 
-        if (command.hasOption(CommandOptions.TEMP_PATH.getLongName())) {
+        if (command.hasOption(CommandOptions.TEMP_PATH.getLongName()) && (!CommandOptions.TEMP_PATH.getLongName().isEmpty())) {
             String tempPath = command.getOptionValue(CommandOptions.TEMP_PATH.getLongName());
-            File tempFullPath = new File(tempPath, sufix);
+            File tempFullPath = new File(tempPath);
             instance.setRootTempPath(tempFullPath.getAbsolutePath());
             instance.setTileTempPath(tempFullPath.getAbsolutePath());
         } else {
