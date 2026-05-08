@@ -17,6 +17,16 @@ import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
 import org.geotools.api.referencing.operation.MathTransform;
 import org.geotools.api.referencing.operation.TransformException;
 import org.geotools.coverage.grid.GridCoverage2D;
+import org.geotools.coverage.grid.GridEnvelope2D;
+import org.geotools.coverage.grid.GridGeometry2D;
+import org.geotools.coverage.grid.io.AbstractGridFormat;
+import org.geotools.gce.geotiff.GeoTiffReader;
+import org.geotools.geometry.jts.ReferencedEnvelope;
+import org.geotools.api.parameter.GeneralParameterValue;
+import org.geotools.api.parameter.ParameterValue;
+import org.geotools.api.geometry.Position;
+import org.geotools.geometry.Position2D;
+import org.geotools.referencing.crs.DefaultGeographicCRS;
 import org.geotools.referencing.CRS;
 import org.joml.Vector2d;
 import org.locationtech.jts.geom.GeometryFactory;
@@ -51,6 +61,42 @@ public class TerrainElevationDataManager {
     private GaiaGeoTiffManager myGaiaGeoTiffManager = null;
     private boolean[] intersects = {false};
     private List<String> geoTiffFileNames = new ArrayList<>();
+    private GridCoverage2D currentTrunkCoverage = null;
+
+    /**
+     * 按需窗口化读取高程 Trunk
+     * @param sourceGeoTiffFile 原始的高精度大文件 (60GB+ TIFF)
+     * @param targetEnvelope 目标 Trunk 的地理包围盒（必须已经做了边缘外扩/Padding 保护，如外扩 1-2 个像素对应的经纬度范围）
+     * @param trunkPixelWidth 该 Trunk 目标在当前层级下的像素宽度（例如 40 个瓦片 * 65 像素 = 2600 像素）
+     * @param trunkPixelHeight 该 Trunk 目标在当前层级下的像素高度
+     * @return 内存中的局部高分辨率重采样 Coverage，榨干价值后务必立即调用 dispose(true)
+     */
+    public GridCoverage2D loadTrunkWindowToMemory(File sourceGeoTiffFile, ReferencedEnvelope targetEnvelope, int trunkPixelWidth, int trunkPixelHeight) throws Exception {
+        GeoTiffReader reader = new GeoTiffReader(sourceGeoTiffFile);
+        try {
+            // 1. 构造 GridGeometry2D
+            GridEnvelope2D gridEnvelope = new GridEnvelope2D(0, 0, trunkPixelWidth, trunkPixelHeight);
+            GridGeometry2D requestGeometry = new GridGeometry2D(gridEnvelope, targetEnvelope);
+
+            // 2. 将 GridGeometry2D 封装进读取参数中
+            ParameterValue<GridGeometry2D> ggParam = AbstractGridFormat.READ_GRIDGEOMETRY2D.createValue();
+            ggParam.setValue(requestGeometry);
+
+            GeneralParameterValue[] readParams = new GeneralParameterValue[] { ggParam };
+
+            // 3. 执行按需读取
+            GridCoverage2D trunkCoverage = reader.read(readParams);
+
+            // 强制提取图像数据（将数据打入内存），切断与底层 IO 的懒加载联系
+            trunkCoverage.getRenderedImage().getData();
+
+            return trunkCoverage;
+        } finally {
+            if (reader != null) {
+                reader.dispose();
+            }
+        }
+    }
 
     public void makeTerrainQuadTree(int depth) throws FactoryException, TransformException, IOException {
         List<File> standardizedGeoTiffFiles = tileWgs84Manager.getStandardizedGeoTiffFiles();
@@ -208,6 +254,18 @@ public class TerrainElevationDataManager {
 
     public double getElevation(double lonDeg, double latDeg, List<TerrainElevationData> terrainElevDataArray) {
         double resultElevation = 0.0;
+
+        if (currentTrunkCoverage != null) {
+            try {
+                Position dp = new Position2D(DefaultGeographicCRS.WGS84, lonDeg, latDeg);
+                double[] val = new double[1];
+                currentTrunkCoverage.evaluate(dp, val);
+                return val[0];
+            } catch (Exception e) {
+                // Point outside coverage, return default
+                return resultElevation;
+            }
+        }
 
         if (rootTerrainElevationDataQuadTree == null) {
             return resultElevation;
